@@ -1,5 +1,17 @@
 require('hs.ipc')
 require('hs.mouse')
+require('spring')
+
+local time_start = 0
+function TimeStart()
+    time_start = hs.timer.secondsSinceEpoch()
+end
+
+function TimeEnd(label)
+    local time_end = hs.timer.secondsSinceEpoch()
+    local time_diff = time_end - time_start
+    print(label, time_diff * 1000)
+end
 
 PaperWM = hs.loadSpoon("PaperWM")
 PaperWM:bindHotkeys({
@@ -9,6 +21,10 @@ PaperWM:bindHotkeys({
   focus_up       = { { "ctrl", "alt", "cmd" }, "up" },
   focus_down     = { { "ctrl", "alt", "cmd" }, "down" },
 
+  -- untile window (make it floating)
+  untile_window  = { { "ctrl", "alt", "cmd", "shift" }, "f" },
+  pin_window = { { "ctrl", "alt", "cmd", "shift" }, "p" },
+
   -- move windows around in tiled grid
   swap_left      = { { "ctrl", "alt", "cmd", "shift" }, "h" },
   swap_right     = { { "ctrl", "alt", "cmd", "shift" }, "l" },
@@ -17,13 +33,11 @@ PaperWM:bindHotkeys({
 
   -- position and resize focused window
   center_window  = { { "ctrl", "alt", "cmd", "shift" }, "c" },
-  full_width     = { { "ctrl", "alt", "cmd" }, "f" },
   cycle_width    = { { "ctrl", "alt", "cmd" }, "r" },
-  cycle_height   = { { "ctrl", "alt", "cmd", "shift" }, "r" },
 
   -- move focused window into / out of a column
-  slurp_in       = { { "ctrl", "alt", "cmd", "shift" }, "s" },
-  barf_out       = { { "ctrl", "alt", "cmd", "shift" }, "b" },
+  --slurp_in       = { { "ctrl", "alt", "cmd", "shift" }, "s" },
+  --barf_out       = { { "ctrl", "alt", "cmd", "shift" }, "b" },
 
   -- switch to a new Mission Control space
   switch_space_1 = { { "ctrl", "alt", "cmd" }, "1" },
@@ -48,7 +62,7 @@ PaperWM:bindHotkeys({
   move_window_9  = { { "ctrl", "alt", "cmd", "shift" }, "9" }
 })
 
-PaperWM.window_filter = PaperWM.window_filter:setAppFilter("Electron", false)
+--PaperWM.window_filter = PaperWM.window_filter
 
 PaperWM:start()
 
@@ -63,30 +77,43 @@ local function shiftTilingBy(value)
 
   local space = hs.spaces.activeSpaceOnScreen(screen)
 
-  PaperWM:shiftSpace(space, value)
+  PaperWM.animate = false
+  PaperWM:tileSpace(space, value)
+  PaperWM.animate = true
 end
 
 local shiftAmount = 0
+local previousTime = 0
+local velocity = 0
+local momentumScroll = false
+local minInitialVelocity = 500
 
 local function shiftThrottled(value)
   shiftAmount = shiftAmount + value
+
   if not ShiftTimer:running() then
     ShiftTimer:start()
   end
 end
 
-ShiftTimer = hs.timer.doEvery(0.016, function()
-  if shiftAmount ~= 0 then
-    shiftTilingBy(shiftAmount)
-    ShiftTimer:stop()
-    shiftAmount = 0
+local velocities = {}
+local velocityIndex = 0
+local maxVelocities = 3
+
+local function startMomentumScroll()
+  if math.abs(velocity) > minInitialVelocity then
+    momentumScroll = true
+    ShiftTimer:start()
+  else
+    momentumScroll = false
+    velocity = 0
   end
-end)
 
-ShiftTimer:start()
+  velocities = {}
+  velocityIndex = 0
+end
 
 
-local touchPrev = {}
 
 local function averageOfTable(table)
   local sum = 0
@@ -97,6 +124,48 @@ local function averageOfTable(table)
 
   return sum / #table
 end
+
+local function handleScrollGesture(value)
+  if momentumScroll then
+    momentumScroll = false 
+    velocity = 0
+  end
+
+  local deltaTime = hs.timer.secondsSinceEpoch() - previousTime
+  local newVelocity = math.min(math.max(value / deltaTime, -15000), 15000)
+
+  velocities[velocityIndex + 1] = newVelocity
+  velocityIndex = (velocityIndex + 1) % maxVelocities
+  velocity = averageOfTable(velocities)
+
+  previousTime = hs.timer.secondsSinceEpoch()
+
+  shiftThrottled(value)
+end
+
+local previousFrameTime = nil
+ShiftTimer = hs.timer.doEvery(0.016, function()
+  if momentumScroll and previousFrameTime and math.abs(velocity) > 10 then
+    shiftAmount = velocity * (hs.timer.secondsSinceEpoch() - previousFrameTime)
+    velocity = velocity * 0.9 
+  end
+
+  previousFrameTime = hs.timer.secondsSinceEpoch()
+
+  if shiftAmount ~= 0 then
+    shiftTilingBy(shiftAmount)
+    shiftAmount = 0
+  else
+    ShiftTimer:stop()
+  end
+end)
+
+ShiftTimer:start()
+
+
+local touchPrev = {}
+
+
 
 local function maxOfTable(table)
   local max = nil
@@ -148,9 +217,12 @@ SwipeGestureTap = hs.eventtap.new({ hs.eventtap.event.types.gesture }, function(
     end
 
     -- shift the windows the average delta
-    shiftThrottled(averageOfTable(deltas) * 3000)
+    handleScrollGesture(averageOfTable(deltas) * 2500)
   else
     touchPrev = {}
+    if not momentumScroll then
+      startMomentumScroll()
+    end
   end
 end)
 
@@ -158,146 +230,11 @@ SwipeGestureTap:start()
 
 
 
---print(task:waitUntilExit())
 
 
--- hs.window.animationDuration = 0
-
--- function alignWindows ()
---   local mouseScreen = hs.mouse.getCurrentScreen()
---   local screenFrame = mouseScreen:frame()
-
---   local focusedWindow = hs.window.focusedWindow()
-
---   if focusedWindow == nil then
---     focusedWindow = hs.window.allWindows()[0]
---   end
-
---   if focusedWindow == nil then
---     return
---   end
-
---   local xBeforeFocused = 0
---   for _, window in ipairs(hs.window.allWindows()) do
---     if window == focusedWindow then
---       break
---     end
-
---     xBeforeFocused = xBeforeFocused + win dow:size().w
---   end
-
-
---   local lastWindowX = focusedWindow:topLeft().x - xBeforeFocused
-
---   hs.fnutils.each(hs.window.allWindows(), function(window)
---     local windowSize = window:size()
---     local position = window:topLeft()
-
---     if window ~= focusedWindow then
---       window:setTopLeft(hs.geometry.point(lastWindowX, screenFrame.y))
---       window:setSize(hs.geometry.size(windowSize.w, screenFrame.h))
---     end
-
---     lastWindowX = lastWindowX + windowSize.w
---   end)
--- end
-
--- alignWindows()
-
-
--- -- local touchdevice = require("hs._asm.undocumented.touchdevice")
--- -- touchdevice.watcher.new(function(...)
--- --   for _, v in ipairs(touchdevice.devices()) do
--- --     touchdevice.forDeviceID(v):frameCallback(function(_, touches, _, _)
--- --       local nFingers = #touches
-
--- --       print(nFingers)
-
--- --       if nFingers == 3 then
--- --         print(nFingers)
--- --       end
--- --     end):start()
--- --   end
--- -- end):start()
-
--- local events = hs.uielement.watcher
-
--- watchers = {}
-
--- function init()
---   appsWatcher = hs.application.watcher.new(handleGlobalAppEvent)
---   appsWatcher:start()
-
---   -- Watch any apps that already exist
---   local apps = hs.application.runningApplications()
---   for i = 1, #apps do
---     if apps[i]:title() ~= "Hammerspoon" then
---       watchApp(apps[i], true)
---     end
---   end
--- end
-
--- function handleGlobalAppEvent(name, event, app)
---   if     event == hs.application.watcher.launched then
---     watchApp(app)
---   elseif event == hs.application.watcher.terminated then
---     -- Clean up
---     local appWatcher = watchers[app:pid()]
---     if appWatcher then
---       appWatcher.watcher:stop()
---       for id, watcher in pairs(appWatcher.windows) do
---         watcher:stop()
---       end
---       watchers[app:pid()] = nil
---     end
---   end
--- end
-
--- function watchApp(app, initializing)
---   if watchers[app:pid()] then return end
-
---   local watcher = app:newWatcher(handleAppEvent)
---   watchers[app:pid()] = {watcher = watcher, windows = {}}
-
---   watcher:start({events.windowCreated, events.focusedWindowChanged})
-
---   -- Watch any windows that already exist
---   for i, window in pairs(app:allWindows()) do
---     watchWindow(window, initializing)
---   end
--- end
-
--- function handleAppEvent(element, event)
---   if event == events.windowCreated then
---     watchWindow(element)
---   elseif event == events.focusedWindowChanged then
---     -- Handle window change
---   end
--- end
-
--- function watchWindow(win, initializing)
---   local appWindows = watchers[win:application():pid()].windows
---   if win:isStandard() and not appWindows[win:id()] then
---     local watcher = win:newWatcher(handleWindowEvent, {pid=win:pid(), id=win:id()})
---     appWindows[win:id()] = watcher
-
---     watcher:start({events.elementDestroyed, events.windowResized, events.windowMoved})
-
---     if not initializing then
---       --hs.alert.show('window created: '..win:id()..' with title: '..win:title())
---     end
---   end
--- end
-
--- function handleWindowEvent(win, event, watcher, info)
---   if event == events.elementDestroyed then
---     watcher:stop()
---     watchers[info.pid].windows[info.id] = nil
---   end
-
---   alignWindows()
-
---   --hs.alert.show('window event '..event..' on '..info.id)
--- end
-
--- init()
+function SetFrontmost(appName)
+  local app = hs.application.find(appName)
+  if app then
+    app:setFrontmost(false)
+  end
+end
