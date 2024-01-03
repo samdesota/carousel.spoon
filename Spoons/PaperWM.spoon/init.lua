@@ -556,7 +556,11 @@ function PaperWM:loadSerializedIndexTable()
 
     -- add serialized windows to window_list in the correct order
     local load_index_table = hs.settings.get('index_table')
-
+    
+    if not load_index_table then
+        return
+    end 
+    
     for _, window in ipairs(self.window_filter:getWindows()) do
         local load_index = load_index_table[tostring(window:id())]
 
