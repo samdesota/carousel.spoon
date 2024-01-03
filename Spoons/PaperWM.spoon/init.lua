@@ -105,7 +105,7 @@ PaperWM.screen_margin = 1
 
 -- logger
 PaperWM.logger = hs.logger.new(PaperWM.name)
-PaperWM.logger.setLogLevel("debug")
+--PaperWM.logger.setLogLevel("debug")
 
 PaperWM.animate = true
 
@@ -326,9 +326,9 @@ local function windowEventHandler(window, event, self)
 
         Timer.doAfter(0.05, function()
             if Window.focusedWindow() == window then
-                --focused_window = window
+                focused_window = window
                 space = Spaces.windowSpaces(window)[1]
-                --PaperWM:moveIntoFrame()
+                PaperWM:moveIntoFrame()
             end
         end)
     elseif event == "windowCreated" then
@@ -347,11 +347,11 @@ local function windowEventHandler(window, event, self)
             return
         end
     elseif event == "windowNotVisible" then
-        Timer.doAfter(0.2, function()
+        Timer.doAfter(0.05, function()
             local destroyed = Window.get(window:id()) == nil
             
             if window:isVisible() and not destroyed then
-                print("window is visible")
+                self.logger("window visible, canceling remove window")
                 return
             end
 
@@ -378,7 +378,7 @@ local function windowEventHandler(window, event, self)
     end
 
     if space and Spaces.activeSpaceOnScreen(Spaces.spaceDisplay(space)) == space then
-       -- self:tileSpace(space)
+      self:tileSpace(space)
     end
 end
 
@@ -665,7 +665,6 @@ local function clamp(min, max, x)
 end
 
 function PaperWM:tileSpace(space, deltaX, override_anchor)
-    print("tile space?", space, debug.traceback())
     if not space or Spaces.spaceType(space) ~= "user" then
         self.logger.e("current space invalid")
         return

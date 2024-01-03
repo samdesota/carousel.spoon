@@ -217,7 +217,7 @@ SwipeGestureTap = hs.eventtap.new({ hs.eventtap.event.types.gesture }, function(
     end
 
     -- shift the windows the average delta
-    handleScrollGesture(averageOfTable(deltas) * 2500)
+    handleScrollGesture(averageOfTable(deltas) * 2000)
   else
     touchPrev = {}
     if not momentumScroll then
