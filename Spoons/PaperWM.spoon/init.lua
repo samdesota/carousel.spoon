@@ -52,8 +52,8 @@ PaperWM.license = "MIT - https://opensource.org/licenses/MIT"
 PaperWM.default_hotkeys = {
     stop_events = {{"ctrl", "alt", "cmd", "shift"}, "q"},
     refresh_windows = {{"ctrl", "alt", "cmd", "shift"}, "r"},
-    focus_left = {{"ctrl", "alt", "cmd"}, "left"},
-    focus_right = {{"ctrl", "alt", "cmd"}, "right"},
+    focus_left = {{"ctrl", "alt", "cmd", "shift"}, "h"},
+    focus_right = {{"ctrl", "alt", "cmd", "shift"}, "l"},
     focus_up = {{"ctrl", "alt", "cmd"}, "up"},
     focus_down = {{"ctrl", "alt", "cmd"}, "down"},
     swap_left = {{"ctrl", "alt", "cmd", "shift"}, "left"},
@@ -124,7 +124,7 @@ local window_list = {} -- 3D array of tiles in order of [space][x][y]
 local index_table = {} -- dictionary of {space, x, y} with window id for keys
 local ui_watchers = {} -- dictionary of uielement watchers with window id for keys
 local disable_watch = {}
-local pinned_windows = {} 
+local pinned_windows = {}
 
 local function debounce(func, wait)
     local timer
@@ -145,7 +145,7 @@ local saveIndexTable = debounce(function()
         encodable_table[tostring(k)] = v
     end
 
-    hs.settings.set("index_table", encodable_table) 
+    hs.settings.set("index_table", encodable_table)
 end, 0.2)
 
 local function setWindowIndex(id, index)
@@ -167,7 +167,7 @@ local function setWindowIndex(id, index)
 end
 
 local function getWindowIndex(id)
-    return index_table[id] 
+    return index_table[id]
 end
 
 -- current focused window
@@ -214,21 +214,17 @@ local function getNearestWindowToMouse(columns, screen, mousePos)
         return
     end
 
-    local screen_frame = screen:frame()
     local mouse_x = mousePos.x
     local closest_window = nil
-    local min_distance = math.huge
 
     for _, column in ipairs(columns) do
         -- check the first window in the column
         local window = column[1]
         local window_frame = window:frame()
-        local window_cx = window_frame.x + (window_frame.w // 2)
-        local distance = math.abs(window_cx - mouse_x)
+        local window_x = window_frame.x
 
-        if distance < min_distance then
+        if mouse_x > window_x then
             closest_window = window
-            min_distance = distance
         end
 
         ::next::
@@ -317,6 +313,8 @@ local function windowEventHandler(window, event, self)
     --
 
     if event == "windowFocused" then
+        space = Spaces.windowSpaces(window)[1]
+
         if pending_window and window == pending_window then
             Timer.doAfter(Window.animationDuration, function()
                 windowEventHandler(window, event, self)
@@ -332,10 +330,18 @@ local function windowEventHandler(window, event, self)
             end
         end)
     elseif event == "windowCreated" then
+        if not self:shouldTileApp(window:application()) then
+            return
+        end
+
        if window:isVisible() and window:isStandard() and not window:isFullScreen() then
            space = self:addWindow(window, true)
        end
     elseif event == "windowVisible" or event == "windowUnfullscreened" then
+        if not self:shouldTileApp(window:application()) then
+            return
+        end
+
         space = self:addWindow(window, true)
         if pending_window and window == pending_window then
             pending_window = nil -- tried to add window for the second time
@@ -349,13 +355,13 @@ local function windowEventHandler(window, event, self)
     elseif event == "windowNotVisible" then
         Timer.doAfter(0.05, function()
             local destroyed = Window.get(window:id()) == nil
-            
+
             if window:isVisible() and not destroyed then
                 self.logger("window visible, canceling remove window")
                 return
             end
 
-            local space = self:removeWindow(window, true) 
+            local space = self:removeWindow(window)
             if space then
                 if Spaces.activeSpaceOnScreen(Spaces.spaceDisplay(space)) == space then
                    self:tileSpace(space)
@@ -364,7 +370,7 @@ local function windowEventHandler(window, event, self)
                 -- destroyed windows don't have a space, retile all active spaces
                 for _, screen in ipairs(Screen.allScreens()) do
                     local space = Spaces.activeSpaceOnScreen(screen:getUUID())
-                    
+
                     if space then
                         self:tileSpace(space)
                     end
@@ -382,12 +388,59 @@ local function windowEventHandler(window, event, self)
     end
 end
 
-function PaperWM:untileWindow() 
+function PaperWM:raiseTiledWindows(space)
+    local windows = self.window_filter:getWindows()
+    local space_windows_table = {}
+    local space_windows = Spaces.windowsForSpace(space)
+
+    for _, window in ipairs(space_windows) do
+        space_windows_table[window:id()] = true
+    end
+
+    local tiled_window_above = false
+
+    for _, window in ipairs(windows) do
+        if Window.focusedWindow() ~= window and space_windows_table[window:id()] then
+            if index_table[window:id()] then
+                tiled_window_above = true
+            elseif tiled_window_above then
+                window:raise()
+            end
+        end
+    end
+end
+
+function PaperWM:untileWindowAtCursor()
+
+    local window = self:findWindowAtCursor()
+    local space
+
+    if window then
+        if index_table[window:id()] then
+            space = PaperWM:removeWindow(window, true)
+
+            local frame = window:frame()
+
+            frame.y = frame.y + 50
+            frame.h = frame.h - 100
+            focused_window:setFrame(frame)
+        else
+            space = PaperWM:addWindow(window, true, true)
+        end
+
+        if space then
+            PaperWM:tileSpace(space)
+        end
+    end
+end
+
+function PaperWM:untileWindow()
     local focused = Window.focusedWindow()
+    local space
 
     if focused then
         if index_table[focused:id()] then
-            PaperWM:removeWindow(focused, true)
+            space = PaperWM:removeWindow(focused, true)
 
             local frame = focused:frame()
 
@@ -395,15 +448,16 @@ function PaperWM:untileWindow()
             frame.h = frame.h - 100
             focused_window:setFrame(frame)
         else
-            local space = PaperWM:addWindow(focused, true)
-            if space then
-                PaperWM:tileSpace(space)
-            end
+            space = PaperWM:addWindow(focused, true, true)
+        end
+
+        if space then
+            PaperWM:tileSpace(space)
         end
     end
 end
 
-function PaperWM:pinWindow() 
+function PaperWM:pinWindow()
     local focused = Window.focusedWindow()
     local window_index = index_table[focused:id()]
 
@@ -412,7 +466,7 @@ function PaperWM:pinWindow()
             table.remove(pinned_windows[window_index.space].left, window_index.col)
             PaperWM:removeWindow(focused, true)
             PaperWM:addWindow(focused, true)
-           return  
+           return
         end
 
         local column = window_list[window_index.space][window_index.col]
@@ -423,7 +477,7 @@ function PaperWM:pinWindow()
         end
 
         updateIndexTable(window_index.space, window_index.col)
- 
+
 
         if pinned_windows[window_index.space] == nil then
            pinned_windows[window_index.space] = {
@@ -463,11 +517,14 @@ function PaperWM:bindHotkeys(mapping)
         swap_up = partial(self.swapWindows, self, Direction.UP),
         swap_down = partial(self.swapWindows, self, Direction.DOWN),
         center_window = partial(self.centerWindow, self),
+        tile_focused_app_by_default = partial(self.tileFocusedAppByDefault, self),
         full_width = partial(self.setWindowFullWidth, self),
         cycle_width = partial(self.cycleWindowSize, self, Direction.WIDTH),
         cycle_height = partial(self.cycleWindowSize, self, Direction.HEIGHT),
         slurp_in = partial(self.slurpWindow, self),
         barf_out = partial(self.barfWindow, self),
+        close_window = partial(self.closeWindow, self),
+        untile_window_at_cursor = partial(self.untileWindowAtCursor, self),
         switch_space_1 = partial(self.switchToSpace, self, 1),
         switch_space_2 = partial(self.switchToSpace, self, 2),
         switch_space_3 = partial(self.switchToSpace, self, 3),
@@ -499,6 +556,32 @@ local function tableContains(tbl, value)
     return false
 end
 
+function PaperWM:findWindowAtCursor()
+    local mousePos = hs.mouse.getAbsolutePosition()
+    local screen = hs.mouse.getCurrentScreen()
+    local windows = Window.orderedWindows()
+
+    for _, window in ipairs(windows) do
+        if window:screen() == screen then
+            local window_frame = window:frame()
+            local in_x = mousePos.x >= window_frame.x and mousePos.x <= window_frame.x2
+            local in_y = mousePos.y >= window_frame.y and mousePos.y <= window_frame.y2
+
+            if in_x and in_y then
+                return window
+            end
+        end
+    end
+end
+
+function PaperWM:closeWindow()
+    local window = self:findWindowAtCursor()
+
+    if (window) then
+        window:close()
+    end
+end
+
 function PaperWM:start()
     -- check for some settings
     if not Spaces.screensHaveSeparateSpaces() then
@@ -511,9 +594,9 @@ function PaperWM:start()
     ui_watchers = {}
     disable_watch = {}
 
-    focused_window = Window.focusedWindow() 
+    focused_window = Window.focusedWindow()
 
-    -- populate saved windows state 
+    -- populate saved windows state
     PaperWM:loadSerializedIndexTable()
 
     -- populate window list, index table, ui_watchers, and set initial layout
@@ -540,6 +623,16 @@ function PaperWM:start()
     return self
 end
 
+function PaperWM:resizeCursorWindow(delta)
+    local cursor_window = self:findWindowAtCursor()
+
+    if cursor_window then
+        local frame = cursor_window:frame()
+        frame.w = frame.w + delta
+        self:moveWindow(cursor_window, frame)
+    end
+end
+
 function PaperWM:loadSerializedIndexTable()
     -- get all spaces
     local spaces = {}
@@ -556,11 +649,11 @@ function PaperWM:loadSerializedIndexTable()
 
     -- add serialized windows to window_list in the correct order
     local load_index_table = hs.settings.get('index_table')
-    
+
     if not load_index_table then
         return
-    end 
-    
+    end
+
     for _, window in ipairs(self.window_filter:getWindows()) do
         local load_index = load_index_table[tostring(window:id())]
 
@@ -571,12 +664,12 @@ function PaperWM:loadSerializedIndexTable()
             end
 
             local columns = window_list[load_index.space]
-            local insertAt = 1 
+            local insertAt = 1
              for i = 1, #columns do
                 local other_win_index = load_index_table[tostring(columns[i][1]:id())]
 
                 if load_index.col > other_win_index.col then
-                    insertAt = insertAt + 1 
+                    insertAt = insertAt + 1
                 elseif load_index.col == other_win_index.col then
                     local insertRow = 1
                     for j = 1, #columns[i] do
@@ -717,7 +810,7 @@ function PaperWM:tileSpace(space, deltaX, override_anchor)
             local frame = pinned_window:frame()
             frame.x = x + self.window_gap
             frame.y = canvas.y
-            frame.h = canvas.h 
+            frame.h = canvas.h
             x = x + frame.w + self.window_gap
             self:moveWindow(pinned_window, frame)
         end
@@ -726,7 +819,7 @@ function PaperWM:tileSpace(space, deltaX, override_anchor)
     end
 
 
-    -- the anchor window 
+    -- the anchor window
 
     -- make sure anchor window is on screen
     local anchor_frame = anchor_window:frame()
@@ -734,8 +827,8 @@ function PaperWM:tileSpace(space, deltaX, override_anchor)
     -- we don't the last window to be able to go fully off the screen
     local anchor_padding = 50
     anchor_frame.x = clamp(
-        left_margin + anchor_padding - anchor_frame.w, 
-        right_margin - anchor_padding, 
+        left_margin + anchor_padding - anchor_frame.w,
+        right_margin - anchor_padding,
         anchor_frame.x + (deltaX or 0)
     )
 
@@ -795,9 +888,66 @@ function PaperWM:tileSpace(space, deltaX, override_anchor)
     end
 end
 
+local tile_by_default_apps = hs.settings.get("tile_by_default_apps") or {}
+
+function PaperWM:tileFocusedAppByDefault()
+    local app = hs.application.frontmostApplication()
+
+    if not app then
+        return
+    end
+
+    if tile_by_default_apps[app:name()] then
+        return self:untileFocusedAppByDefault()
+    end
+
+    tile_by_default_apps[app:name()] = true
+    hs.settings.set("tile_by_default_apps", tile_by_default_apps)
+
+    self:refreshWindows()
+end
+
+function PaperWM:untileFocusedAppByDefault()
+    local app = hs.application.frontmostApplication()
+
+    if not app then
+        return
+    end
+
+    tile_by_default_apps[app:name()] = nil
+    hs.settings.set("tile_by_default_apps", tile_by_default_apps)
+
+    self:refreshWindows()
+end
+
+function PaperWM:shouldTileApp(app)
+    return tile_by_default_apps[app:name()]
+end
+
+function PaperWM:getTilableWindows()
+    local all_windows = self.window_filter:getWindows()
+    local tiled_windows = {}
+
+    for _, window in ipairs(all_windows) do
+        if self:shouldTileApp(window:application()) then
+            table.insert(tiled_windows, window)
+        end
+
+        if index_table[window:id()] ~= nil then
+            table.insert(tiled_windows, window)
+        end
+    end
+
+    return tiled_windows
+end
+
+function PaperWM:isWindowTiled(window)
+    return index_table[window:id()] ~= nil
+end
+
 function PaperWM:refreshWindows()
     -- get all windows across spaces
-    local all_windows = self.window_filter:getWindows()
+    local all_windows = self:getTilableWindows()
 
     local retile_spaces = {} -- spaces that need to be retiled
     for _, window in ipairs(all_windows) do
@@ -824,7 +974,50 @@ function PaperWM:refreshWindows()
     end
 end
 
-function PaperWM:addWindow(add_window, addToMouseSpace)
+function PaperWM:findWindowToInsertNewWindowAfterByMousePosition(columns, screen)
+    local mousePos = hs.mouse.getAbsolutePosition()
+    local anchor = nil
+
+    for _, col in ipairs(columns) do
+        local first = col[1]
+
+        if first then
+            local col_frame = first:frame()
+            local col_cx = col_frame.x
+
+            if mousePos.x > col_cx then
+                anchor = first
+            end
+        end
+    end
+
+    return anchor
+end
+
+
+function PaperWM:findWindowToInsertNewWindowAfter(columns, screen, window)
+    local mousePos = hs.mouse.getAbsolutePosition()
+    local wframe = window:frame()
+    local wcx = wframe.x + wframe.w / 2
+    local anchor = nil
+
+    for _, col in ipairs(columns) do
+        local first = col[1]
+
+        if first then
+            local col_frame = first:frame()
+            local col_cx = col_frame.x + col_frame.w / 2
+
+            if wcx > col_cx then
+                anchor = first
+            end
+        end
+    end
+
+    return anchor
+end
+
+function PaperWM:addWindow(add_window, add_to_mouse_space, insert_at_nearest_column)
     local space = Spaces.windowSpaces(add_window)[1]
     if not space then
         self.logger.e("add window does not have a space")
@@ -843,7 +1036,7 @@ function PaperWM:addWindow(add_window, addToMouseSpace)
     end
 
     local screen = hs.mouse.getCurrentScreen()
-    if addToMouseSpace then
+    if add_to_mouse_space then
         if screen ~= nil then
             local mouseSpace = hs.spaces.activeSpaceOnScreen(screen)
             space = mouseSpace
@@ -860,19 +1053,23 @@ function PaperWM:addWindow(add_window, addToMouseSpace)
     local add_column = 1
     local anchor_window = getAnchorWindow(window_list[space], screen)
 
-    if focused_window and getWindowVisibilityPercent(screen, focused_window) > 0.5 then
-        anchor_window = focused_window
-    end
 
-    if addToMouseSpace then
-       anchor_window = getNearestWindowToMouse(window_list[space], screen, hs.mouse.getAbsolutePosition()) or anchor_window 
+    anchor_window = self:findWindowToInsertNewWindowAfterByMousePosition(window_list[space], screen)
+    --focused_window and getWindowVisibilityPercent(screen, focused_window) > 0.5 then
+     --   anchor_window = focused_window
+    --end
+
+    if insert_at_nearest_column then
+       anchor_window = self:findWindowToInsertNewWindowAfter(window_list[space], screen, add_window)
     end
 
     -- when addWindow() is called from a window created event:
     -- focused_window from previous window focused event will not be add_window
     -- hs.window.focusedWindow() will return add_window
     -- new window focused event for add_window has not happened yet
-    if anchor_window and ((index_table[anchor_window:id()] or {}).space == space) and
+    if anchor_window == nil and add_to_mouse_space then
+        add_column = 1
+    elseif anchor_window and ((index_table[anchor_window:id()] or {}).space == space) and
         (anchor_window:id() ~= add_window:id()) then
         add_column = index_table[anchor_window:id()].col + 1 -- insert to the right
     else
@@ -884,6 +1081,8 @@ function PaperWM:addWindow(add_window, addToMouseSpace)
             end
         end
     end
+
+    print(anchor_window, add_column)
 
     -- add window
     table.insert(window_list[space], add_column, {add_window})
@@ -901,7 +1100,7 @@ function PaperWM:addWindow(add_window, addToMouseSpace)
     return space
 end
 
-function PaperWM:addWatcher(add_window) 
+function PaperWM:addWatcher(add_window)
     local watcher = add_window:newWatcher(function(window, event, _, self)
         if disable_watch[window:id()] then
             return
@@ -1132,13 +1331,13 @@ function PaperWM:moveIntoFrame()
     local screen_frame = screen:frame()
 
     local maxX = 0
-    local minX = screen_frame.x 
+    local minX = screen_frame.x
 
     -- if the window is wider then the screen, center the window
     if focused_frame.w > screen_frame.w then
-        maxX = (screen_frame.x - (focused_frame.w - screen_frame.w) / 2) 
+        maxX = (screen_frame.x - (focused_frame.w - screen_frame.w) / 2)
 
-        -- otherwise, maxX should be the max x that allows the 
+        -- otherwise, maxX should be the max x that allows the
         -- window to be fully on the screen, minus the padding
     else
         maxX = ((screen_frame.x + screen_frame.w) - focused_frame.w)
@@ -1158,7 +1357,7 @@ function PaperWM:moveIntoFrame()
 
         -- add padding if there's a window to the left
         if window_list[focused_index.space][focused_index.col - 1] then
-           newFocusedFrameX = newFocusedFrameX + 50 
+           newFocusedFrameX = newFocusedFrameX + 50
         end
     end
 
@@ -1167,7 +1366,7 @@ function PaperWM:moveIntoFrame()
 
         -- add padding if there's a window to the right
         if window_list[focused_index.space][focused_index.col + 1] then
-           newFocusedFrameX = newFocusedFrameX - 50 
+           newFocusedFrameX = newFocusedFrameX - 50
         end
     end
 
@@ -1450,7 +1649,7 @@ function PaperWM:moveWindowToSpace(index)
     Spaces.gotoSpace(new_space)
 end
 
-function PaperWM:moveWindow(window, frame, anim)
+function PaperWM:moveWindow(window, frame)
     local watcher = ui_watchers[window:id()]
     if not watcher then
         self.logger.e("window does not have ui watcher")

@@ -16,18 +16,19 @@ end
 PaperWM = hs.loadSpoon("PaperWM")
 PaperWM:bindHotkeys({
   -- switch to a new focused window in tiled grid
-  focus_left     = { { "ctrl", "alt", "cmd" }, "left" },
-  focus_right    = { { "ctrl", "alt", "cmd" }, "right" },
   focus_up       = { { "ctrl", "alt", "cmd" }, "up" },
   focus_down     = { { "ctrl", "alt", "cmd" }, "down" },
+  focus_left = {{"ctrl", "alt", "cmd", "shift"}, "h"},
+  focus_right = {{"ctrl", "alt", "cmd", "shift"}, "l"},
 
-  -- untile window (make it floating)
-  untile_window  = { { "ctrl", "alt", "cmd", "shift" }, "f" },
-  pin_window = { { "ctrl", "alt", "cmd", "shift" }, "p" },
+  -- untile window (make it floating)>ri
+  untile_window_at_cursor  = { { "ctrl", "alt", "cmd", "shift" }, "f" },
+  close_window = { {}, "f19" },
+  tile_focused_app_by_default = { {"ctrl", "alt", "cmd", "shift"}, "a" },
 
   -- move windows around in tiled grid
-  swap_left      = { { "ctrl", "alt", "cmd", "shift" }, "h" },
-  swap_right     = { { "ctrl", "alt", "cmd", "shift" }, "l" },
+  swap_left      = { { "ctrl", "alt", "cmd", "shift" }, "left" },
+  swap_right     = { { "ctrl", "alt", "cmd", "shift" }, "right" },
   swap_up        = { { "ctrl", "alt", "cmd", "shift" }, "up" },
   swap_down      = { { "ctrl", "alt", "cmd", "shift" }, "down" },
 
@@ -68,7 +69,7 @@ PaperWM:start()
 
 hs.mouse.getCurrentScreen()
 
-local function shiftTilingBy(value)
+local function shiftTilingBy(value, animate)
   local screen = hs.mouse.getCurrentScreen()
 
   if screen == nil then
@@ -77,7 +78,7 @@ local function shiftTilingBy(value)
 
   local space = hs.spaces.activeSpaceOnScreen(screen)
 
-  PaperWM.animate = false
+  PaperWM.animate = animate
   PaperWM:tileSpace(space, value)
   PaperWM.animate = true
 end
@@ -87,9 +88,21 @@ local previousTime = 0
 local velocity = 0
 local momentumScroll = false
 local minInitialVelocity = 500
+local moveAmountX = 0
+local moveAmountY = 0
 
 local function shiftThrottled(value)
   shiftAmount = shiftAmount + value
+
+  if not ShiftTimer:running() then
+    ShiftTimer:start()
+  end
+end
+
+
+local function moveWindowThrottled(x, y)
+  moveAmountX = moveAmountX + x
+  moveAmountY = moveAmountY + y
 
   if not ShiftTimer:running() then
     ShiftTimer:start()
@@ -127,12 +140,12 @@ end
 
 local function handleScrollGesture(value)
   if momentumScroll then
-    momentumScroll = false 
+    momentumScroll = false
     velocity = 0
   end
 
   local deltaTime = hs.timer.secondsSinceEpoch() - previousTime
-  local newVelocity = math.min(math.max(value / deltaTime, -15000), 15000)
+  local newVelocity = math.min(math.max(value / deltaTime, -20000), 20000)
 
   velocities[velocityIndex + 1] = newVelocity
   velocityIndex = (velocityIndex + 1) % maxVelocities
@@ -144,10 +157,12 @@ local function handleScrollGesture(value)
 end
 
 local previousFrameTime = nil
+local windowAtCursor
+
 ShiftTimer = hs.timer.doEvery(0.016, function()
   if momentumScroll and previousFrameTime and math.abs(velocity) > 10 then
     shiftAmount = velocity * (hs.timer.secondsSinceEpoch() - previousFrameTime)
-    velocity = velocity * 0.9 
+    velocity = velocity * 0.95
   end
 
   previousFrameTime = hs.timer.secondsSinceEpoch()
@@ -155,6 +170,17 @@ ShiftTimer = hs.timer.doEvery(0.016, function()
   if shiftAmount ~= 0 then
     shiftTilingBy(shiftAmount)
     shiftAmount = 0
+  elseif math.abs(moveAmountX) ~= 0 or math.abs(moveAmountY) > 0 then
+    if windowAtCursor then
+      local frame = windowAtCursor:frame()
+
+      frame.x = frame.x + moveAmountX
+      frame.y = frame.y + moveAmountY
+
+      windowAtCursor:setTopLeft(frame)
+      moveAmountX = 0
+      moveAmountY = 0
+    end
   else
     ShiftTimer:stop()
   end
@@ -164,8 +190,6 @@ ShiftTimer:start()
 
 
 local touchPrev = {}
-
-
 
 local function maxOfTable(table)
   local max = nil
@@ -177,7 +201,62 @@ local function maxOfTable(table)
   return max
 end
 
-SwipeGestureTap = hs.eventtap.new({ hs.eventtap.event.types.gesture }, function(event)
+
+
+local function resizeCurrentWindow(delta)
+  PaperWM.animate = false
+  PaperWM:resizeCursorWindow(delta)
+  PaperWM.animate = true
+end
+
+
+SlideWithMouseTap = hs.eventtap.new({ hs.eventtap.event.types.mouseMoved }, function(event)
+  local whichFlags = event:getFlags()
+  if whichFlags['cmd'] and whichFlags['ctrl'] and whichFlags['alt'] and whichFlags['shift'] then
+    local dx = event:getProperty(hs.eventtap.event.properties.mouseEventDeltaX)
+    local dy = event:getProperty(hs.eventtap.event.properties.mouseEventDeltaY)
+
+    if windowAtCursor == nil or PaperWM:isWindowTiled(windowAtCursor) then
+      if math.abs(dx) > math.abs(dy) then
+        shiftThrottled(dx * 2)
+        return true
+      end
+    else
+      moveWindowThrottled(dx, dy)
+
+      return true
+    end
+  end
+
+  return false
+end)
+
+
+HyperDownTap = hs.eventtap.new({hs.eventtap.event.types.flagsChanged}, function(event)
+  local whichFlags = event:getFlags()
+  if whichFlags['cmd'] and whichFlags['ctrl'] and whichFlags['alt'] and whichFlags['shift'] then
+    windowAtCursor = PaperWM:findWindowAtCursor()
+    SlideWithMouseTap:start()
+  else
+    windowAtCursor = nil
+    SlideWithMouseTap:stop()
+  end
+  return false
+end):start()
+
+SwipeGestureTap = hs.eventtap.new({ hs.eventtap.event.types.gesture, hs.eventtap.event.types.scrollWheel }, function(event)
+  if event:getType() == hs.eventtap.event.types.scrollWheel then
+    local horizontal_delta = event:getProperty(hs.eventtap.event.properties.scrollWheelEventDeltaAxis2)
+
+    if hs.eventtap.checkKeyboardModifiers()['cmd'] then
+      handleScrollGesture(horizontal_delta * 10)
+      return true
+    end
+
+    return
+  end
+
+  --print(hs.inspect(event))
   local touches = event:getTouches()
 
   -- matching a three finger gesture
@@ -205,7 +284,7 @@ SwipeGestureTap = hs.eventtap.new({ hs.eventtap.event.types.gesture }, function(
     end
 
     -- If one of the touches has 30% the movement of the maxDelta, we
-    -- won't consider this three-finger swipe (the touches aren't 
+    -- won't consider this three-finger swipe (the touches aren't
     -- moving at the same speed)
     local deltaEquivalenceThreshold = 0.3
     local maxDelta = maxOfTable(deltas)
@@ -217,7 +296,7 @@ SwipeGestureTap = hs.eventtap.new({ hs.eventtap.event.types.gesture }, function(
     end
 
     -- shift the windows the average delta
-    handleScrollGesture(averageOfTable(deltas) * 2000)
+    handleScrollGesture(averageOfTable(deltas) * 4000)
   else
     touchPrev = {}
     if not momentumScroll then
@@ -227,10 +306,6 @@ SwipeGestureTap = hs.eventtap.new({ hs.eventtap.event.types.gesture }, function(
 end)
 
 SwipeGestureTap:start()
-
-
-
-
 
 function SetFrontmost(appName)
   local app = hs.application.find(appName)
